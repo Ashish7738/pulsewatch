@@ -1,0 +1,12 @@
+name: pulsewatch-web
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_UPSTREAM: ${APP_HOST:?Set APP_HOST}:5000
+    ports:
+      - "80:8080"

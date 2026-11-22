@@ -7,9 +7,6 @@ pipeline {
     }
 
     environment {
-        COMPOSE_PROJECT_NAME = 'pulsewatch'
-        // "Secret file" credential (ID: pulsewatch-env) holding the contents of .env.
-        // Jenkins exposes it as a temp file path, so secrets never enter the repo or the logs.
         ENV_FILE = credentials('pulsewatch-env')
     }
 
@@ -32,16 +29,30 @@ pipeline {
 
         stage('Build') {
             steps {
-                sh 'docker compose --env-file "$ENV_FILE" build'
+                sh '''
+                    set -a; . "$ENV_FILE"; set +a
+                    docker compose -f docker-compose.web.yml --env-file "$ENV_FILE" build
+                    DOCKER_HOST=ssh://ubuntu@$APP_HOST \
+                        docker compose -f docker-compose.app.yml --env-file "$ENV_FILE" build
+                '''
             }
         }
 
         stage('Deploy') {
             steps {
-                // No "-v": the pgdata volume (users + metrics) survives redeploys.
                 sh '''
-                    docker compose --env-file "$ENV_FILE" down || true
-                    docker compose --env-file "$ENV_FILE" up -d
+                    set -a; . "$ENV_FILE"; set +a
+
+                    DOCKER_HOST=ssh://ubuntu@$DB_HOST \
+                        docker compose -f docker-compose.db.yml --env-file "$ENV_FILE" up -d --wait
+
+                    DOCKER_HOST=ssh://ubuntu@$APP_HOST \
+                        docker compose -f docker-compose.app.yml --env-file "$ENV_FILE" down || true
+                    DOCKER_HOST=ssh://ubuntu@$APP_HOST \
+                        docker compose -f docker-compose.app.yml --env-file "$ENV_FILE" up -d --wait
+
+                    docker compose -f docker-compose.web.yml --env-file "$ENV_FILE" down || true
+                    docker compose -f docker-compose.web.yml --env-file "$ENV_FILE" up -d
                 '''
             }
         }
@@ -49,9 +60,11 @@ pipeline {
         stage('Health Check') {
             steps {
                 sh '''
+                    set -a; . "$ENV_FILE"; set +a
                     sleep 10
                     for i in 1 2 3 4 5 6; do
-                        curl -f http://localhost/api/health && exit 0
+                        curl -f http://$APP_HOST:5000/api/health \
+                          && curl -f http://localhost/api/health && exit 0
                         echo "Not ready yet (attempt $i), retrying in 5s..."
                         sleep 5
                     done
@@ -62,14 +75,8 @@ pipeline {
     }
 
     post {
-        success {
-            echo 'PulseWatch deployed and healthy: http://<EC2-PUBLIC-IP>'
-        }
-        failure {
-            echo 'Pipeline failed. Check the stage logs above (docker compose logs on the server may help).'
-        }
-        always {
-            sh 'docker image prune -f || true'
-        }
+        success { echo 'PulseWatch deployed on 3 servers' }
+        failure { echo 'Pipeline failed. Check the stage logs above.' }
+        always  { sh 'docker image prune -f || true' }
     }
 }

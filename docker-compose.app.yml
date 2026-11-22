@@ -1,0 +1,22 @@
+name: pulsewatch-app
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg2://pulsewatch:${DB_PASSWORD:?Set DB_PASSWORD}@${DB_HOST:?Set DB_HOST}:5432/pulsewatch
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET (min 32 chars)}
+    volumes:
+      - /etc/os-release:/host/etc/os-release:ro
+      - /etc/hostname:/host/etc/hostname:ro
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
