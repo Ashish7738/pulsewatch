@@ -39,7 +39,7 @@ pipeline**.
                      │  │ container: pulsewatch-web-frontend-1  │  │
                      │  │ nginx + static frontend, :8080 → host │  │
                      │  └───────────────────┬───────────────────┘  │
-                     │                      │ /api proxy             │
+                     │                      │ /api proxy           │
                      │  ┌───────────────────▼───────────────────┐  │
                      │  │ Jenkins (controller, :8080)           │  │
                      │  └───────────────────────────────────────┘  │
