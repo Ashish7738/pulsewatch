@@ -4,6 +4,12 @@ PulseWatch is a lightweight server‑monitoring dashboard. A web frontend displa
 live CPU, memory and disk gauges, a historical chart and an alerts panel; a
 backend API collects metrics and stores them in PostgreSQL.
 
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![Jenkins](https://img.shields.io/badge/CI%2FCD-Jenkins-D24939?logo=jenkins&logoColor=white)
+![AWS](https://img.shields.io/badge/AWS-EC2-FF9900?logo=amazonaws&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green)
+
 **This is a classic 3‑tier application** — *presentation*, *application* and *data* —
 deployed as **three separate AWS EC2 instances**, one tier per instance, each tier
 running in its own Docker container. Tiers communicate only over defined network
