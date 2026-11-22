@@ -1,13 +1,18 @@
-# PulseWatch — 3‑Server AWS Deployment
+# PulseWatch — 3‑Tier, 3‑Server AWS Deployment
 
 PulseWatch is a lightweight server‑monitoring dashboard. A web frontend displays
 live CPU, memory and disk gauges, a historical chart and an alerts panel; a
 backend API collects metrics and stores them in PostgreSQL.
 
+**This is a classic 3‑tier application** — *presentation*, *application* and *data* —
+deployed as **three separate AWS EC2 instances**, one tier per instance, each tier
+running in its own Docker container. Tiers communicate only over defined network
+interfaces (`HTTP /api/*` from web → app, `TCP 5432` from app → db) and are
+independently deployable. See [3‑Tier design](#3-tier-design) below.
+
 This repository documents **my deployment** of the upstream project
-([Ashish7738/pulsewatch](https://github.com/Ashish7738/pulsewatch)) across
-**three separate AWS EC2 instances**, built and deployed by a **Jenkins CI/CD
-pipeline**.
+([Ashish7738/pulsewatch](https://github.com/Ashish7738/pulsewatch)) with a
+**Jenkins CI/CD pipeline** that builds and deploys all three tiers.
 
 ---
 
@@ -57,6 +62,41 @@ pipeline**.
                      │  PostgreSQL 16, volume pulsewatch-db_pgdata │
                      └─────────────────────────────────────────────┘
 ```
+
+### 3‑Tier design
+
+PulseWatch follows the canonical **3‑tier architecture**. Each tier has a single
+responsibility, a separate process/container, a separate host, and a well‑defined
+interface to its neighbour:
+
+| # | Tier | Logical role | Where it runs | Interface exposed |
+|---|------|--------------|---------------|-------------------|
+| **1** | **Presentation** | Serves the UI to the browser, proxies API calls | `pulsewatch-web` — `pulsewatch-web-frontend-1` (nginx + static SPA) | HTTP `:80` (public) |
+| **2** | **Application** | Business logic, auth, REST API, metrics collection | `pulsewatch-app` — `pulsewatch-app-backend-1` (Flask + collector) | HTTP `:5000` (private) |
+| **3** | **Data** | Persists users, metrics, alerts | `pulsewatch-db` — `pulsewatch-db-db-1` (PostgreSQL 16) | TCP `:5432` (private) |
+
+**Why this qualifies as 3‑tier:**
+
+- **Separation of concerns** — no tier contains code belonging to another. The
+  nginx container has no business logic; the Flask container renders no HTML and
+  embeds no database credentials beyond a connection string; Postgres only stores
+  data.
+- **Network boundaries enforce the layers** — the app tier is unreachable from the
+  internet, the db tier is unreachable even from the web tier. Security groups
+  enforce *web → app* and *app → db*, and nothing else.
+- **Independent deployability** — the Jenkins `Deploy` stage recreates each tier
+  separately (`db` first, then `app`, then `web`), and each tier could be
+  replaced, scaled, or rewritten without touching the others.
+- **Stateless tiers 1 & 2, stateful tier 3** — all persistence lives in the
+  Postgres volume (`pulsewatch-db_pgdata`); the frontend and backend containers
+  can be destroyed and rebuilt at will.
+
+**What this is *not*:** it is not a microservices architecture — tier 2 is a
+single Flask process handling auth, metrics and system info. "3‑tier" is about
+*logical layers*, "microservices" is about *service granularity*. The two are
+orthogonal, and this deployment deliberately stays in the simpler 3‑tier model.
+
+---
 
 Only the **web** instance has a public IP. All service‑to‑service traffic
 (`web → app`, `app → db`) uses **private IPs** inside the VPC and is authorised
