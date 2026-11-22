@@ -1,269 +1,357 @@
-# PulseWatch
+# PulseWatch — 3‑Server AWS Deployment
 
-> A self-hosted dashboard that shows live CPU, memory and disk usage of the server it runs on, deployed to AWS EC2 with Docker Compose and shipped by a Jenkins pipeline.
+PulseWatch is a lightweight server‑monitoring dashboard. A web frontend displays
+live CPU, memory and disk gauges, a historical chart and an alerts panel; a
+backend API collects metrics and stores them in PostgreSQL.
 
-![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
-![Jenkins](https://img.shields.io/badge/CI%2FCD-Jenkins-D24939?logo=jenkins&logoColor=white)
-![AWS](https://img.shields.io/badge/AWS-EC2-FF9900?logo=amazonaws&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green)
+This repository documents **my deployment** of the upstream project
+([Ashish7738/pulsewatch](https://github.com/Ashish7738/pulsewatch)) across
+**three separate AWS EC2 instances**, built and deployed by a **Jenkins CI/CD
+pipeline**.
 
-## 📸 Live Demo Proof
+---
 
-<table>
-  <tr>
-    <td align="center"><img src="screenshots/01-login.png" alt="Login page" width="440"><br><sub>Login page</sub></td>
-    <td align="center"><img src="screenshots/02-dashboard.png" alt="Dashboard with gauges and chart" width="440"><br><sub>Dashboard: gauges, history chart, system info</sub></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="screenshots/03-swagger-api.png" alt="Swagger UI at /api/docs" width="440"><br><sub>Swagger UI at <code>/api/docs</code></sub></td>
-    <td align="center"><img src="screenshots/04-jenkins-pipeline.png" alt="Jenkins pipeline, all stages green" width="440"><br><sub>Jenkins pipeline, all stages green</sub></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="screenshots/05-docker-ps.png" alt="docker ps showing 3 containers" width="440"><br><sub><code>docker ps</code> on EC2: 3 containers running</sub></td>
-    <td align="center"><img src="screenshots/06-ec2-console.png" alt="AWS console, instance running" width="440"><br><sub>AWS console: instance <em>running</em></sub></td>
-  </tr>
-</table>
+## Table of contents
 
-> **Before you commit screenshots:** blur public IPs, JWT tokens, your AWS account ID, and any email addresses you do not want public.
+1. [Architecture](#architecture)
+2. [Tech stack](#tech-stack)
+3. [Repository layout](#repository-layout)
+4. [AWS infrastructure](#aws-infrastructure)
+5. [Security groups](#security-groups)
+6. [Environment file](#environment-file)
+7. [Jenkins setup](#jenkins-setup)
+8. [CI/CD pipeline](#cicd-pipeline)
+9. [Deployment walkthrough](#deployment-walkthrough)
+10. [Accessing the application](#accessing-the-application)
+11. [Screenshots / evidence](#screenshots--evidence)
+12. [Troubleshooting log](#troubleshooting-log)
+13. [Security notes](#security-notes)
+14. [Teardown](#teardown)
+
+---
 
 ## Architecture
 
 ```
-                         AWS EC2 (Ubuntu 22.04)
- ┌───────────────────────────────────────────────────────────────────┐
- │  Docker Compose                                                   │
- │                                                                   │
- │  Browser ──:80──► ┌─────────┐  /api/*  ┌──────────────┐  ┌──────┐ │
- │                   │  Nginx  │─────────►│ Flask +      │─►│ Post │ │
- │                   │ (static)│          │ Gunicorn:5000│  │ gres │ │
- │                   └─────────┘          │ + psutil     │  │  16  │ │
- │                                        │   sampler    │  └──────┘ │
- │                                        └──────────────┘  pgdata   │
- │                                                                   │
- │  Jenkins :8080 ── docker compose build + up ──► (stack above)     │
- └───────────────────────────────────────────────────────────────────┘
+                     ┌─────────────────────────────────────────────┐
+   Browser           │  EC2: pulsewatch-web   (public subnet)      │
+  http://…:80  ────► │  ┌───────────────────────────────────────┐  │
+                     │  │ container: pulsewatch-web-frontend-1  │  │
+                     │  │ nginx + static frontend, :8080 → host │  │
+                     │  └───────────────────┬───────────────────┘  │
+                     │                      │ /api proxy             │
+                     │  ┌───────────────────▼───────────────────┐  │
+                     │  │ Jenkins (controller, :8080)           │  │
+                     │  └───────────────────────────────────────┘  │
+                     └──────────────────────┬──────────────────────┘
+                                            │ private IP :5000
+                     ┌──────────────────────▼──────────────────────┐
+                     │  EC2: pulsewatch-app   (private)            │
+                     │  container: pulsewatch-app-backend-1        │
+                     │  Flask API + metrics collector, :5000       │
+                     └──────────────────────┬──────────────────────┘
+                                            │ private IP :5432
+                     ┌──────────────────────▼──────────────────────┐
+                     │  EC2: pulsewatch-db    (private)            │
+                     │  container: pulsewatch-db-db-1              │
+                     │  PostgreSQL 16, volume pulsewatch-db_pgdata │
+                     └─────────────────────────────────────────────┘
 ```
 
-## Features
+Only the **web** instance has a public IP. All service‑to‑service traffic
+(`web → app`, `app → db`) uses **private IPs** inside the VPC and is authorised
+by **security‑group references**, not CIDR ranges.
 
-- JWT authentication: register (auto-login) and login
-- Three animated gauges for CPU, memory and disk, refreshed every 5 seconds
-- Chart.js line chart of CPU and memory for the last 60 minutes (refreshed every 30 seconds)
-- System info card: hostname, OS, kernel version, uptime
-- Alerts: yellow warning when CPU is above 80%, red when disk is above 90%
-- Background thread samples psutil every 10 seconds into PostgreSQL; rows older than 7 days are deleted automatically
-- Swagger UI generated at `/api/docs`
-- JSON errors for 400, 401, 404 and 500
-- Dark mode by default (with a light toggle), responsive layout
-- Jenkins pipeline: checkout, lint and test, build, deploy, health check
+| Tier | Instance | Private IP | Container | Port |
+|------|----------|------------|-----------|------|
+| Web / CI | `pulsewatch-web` | `172.31.7.40` | `pulsewatch-web-frontend-1` | 80 → 8080 |
+| App | `pulsewatch-app` | `172.31.9.102` | `pulsewatch-app-backend-1` | 5000 |
+| DB | `pulsewatch-db` | `172.31.7.4` | `pulsewatch-db-db-1` | 5432 |
 
-## Tech Stack
+---
 
-| Layer | Technology |
-|---|---|
-| Backend | Python 3.11, Flask, Flask-SQLAlchemy, Flask-JWT-Extended, flask-restx, psutil, Gunicorn |
-| Frontend | HTML5, Tailwind CSS (CDN), vanilla JavaScript, Chart.js (CDN) |
-| Database | PostgreSQL 16 |
-| Reverse proxy | Nginx (unprivileged image) |
-| Containers | Docker, Docker Compose (db, backend, frontend) |
-| CI/CD | Jenkins (declarative Jenkinsfile) |
-| Cloud | AWS EC2, Ubuntu 22.04 |
+## Tech stack
 
-## API Endpoints
+- **Frontend:** static SPA served by nginx in the web container
+- **Backend:** Python / Flask API with a metrics collector, health endpoint `/api/health`
+- **Database:** PostgreSQL 16 (`postgres:16-alpine`), persisted on a named Docker volume
+- **Containerisation:** Docker Engine + Docker Compose (three separate compose files)
+- **CI/CD:** Jenkins (declarative pipeline, `Jenkinsfile` in repo root)
+- **Cloud:** AWS EC2 (Ubuntu), custom security groups, EBS root volumes
 
-| Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| POST | `/api/auth/register` | No | Create user, returns a JWT |
-| POST | `/api/auth/login` | No | Returns a JWT |
-| GET | `/api/metrics/latest` | Yes | Latest CPU / memory / disk |
-| GET | `/api/metrics/history?minutes=60` | Yes | Historical samples (1 to 10080 minutes) |
-| GET | `/api/system/info` | Yes | Hostname, OS, kernel, uptime |
-| GET | `/api/health` | No | `{"status": "ok"}` |
-| GET | `/api/docs` | No | Swagger UI |
+---
 
-Protected endpoints expect `Authorization: Bearer <token>`.
-
-## Run Locally
-
-Requires Docker with the Compose plugin.
-
-```bash
-git clone https://github.com/<your-username>/pulsewatch.git
-cd pulsewatch
-cp .env.example .env        # then edit DB_PASSWORD and JWT_SECRET
-docker compose up --build
-```
-
-Generate good values:
-
-```bash
-openssl rand -hex 16   # DB_PASSWORD (URL-safe)
-openssl rand -hex 32   # JWT_SECRET  (64 chars, minimum is 32)
-```
-
-Open <http://localhost> (Swagger at <http://localhost/api/docs>). If port 80 is taken, change `"80:8080"` in `docker-compose.yml`.
-
-Run the tests without Docker:
-
-```bash
-cd backend && pip install -r requirements.txt && pytest -q
-```
-
-## Deploy to AWS EC2
-
-### 1. Launch the instance
-Ubuntu Server 22.04 LTS, **t3.small** recommended. For the free tier use **t2.micro** and add swap (step 3).
-
-### 2. Security group (inbound)
-
-| Port | Source | Purpose |
-|---|---|---|
-| 22 | **Your IP only** | SSH |
-| 80 | 0.0.0.0/0 | PulseWatch |
-| 8080 | Your IP (recommended) | Jenkins |
-
-### 3. SSH in and (t2.micro only) add swap
-
-```bash
-ssh -i your-key.pem ubuntu@<EC2-PUBLIC-IP>
-
-sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-```
-
-### 4. Install Docker, Compose and Jenkins
-
-```bash
-sudo apt-get update && sudo apt-get install -y ca-certificates curl gnupg git
-
-# Docker Engine + Compose plugin (official repository)
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-sudo usermod -aG docker ubuntu
-
-# Jenkins (needs Java 17)
-sudo apt-get install -y fontconfig openjdk-17-jre
-sudo wget -O /usr/share/keyrings/jenkins-keyring.asc https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
-echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | sudo tee /etc/apt/sources.list.d/jenkins.list
-sudo apt-get update && sudo apt-get install -y jenkins
-```
-
-If the Jenkins signing key has changed, copy the current commands from the Jenkins Debian install docs.
-
-### 5. Let Jenkins use Docker
-
-```bash
-sudo usermod -aG docker jenkins
-sudo systemctl restart jenkins
-```
-
-### 6. Clone the repo and create `.env`
-
-```bash
-git clone https://github.com/<your-username>/pulsewatch.git
-cd pulsewatch
-cp .env.example .env
-nano .env     # set DB_PASSWORD and JWT_SECRET (32+ chars)
-```
-
-### 7. Set up Jenkins
-1. Open `http://<EC2-PUBLIC-IP>:8080`, unlock with `sudo cat /var/lib/jenkins/secrets/initialAdminPassword`, install the suggested plugins.
-2. **Manage Jenkins → Credentials → Global → Add Credentials**: kind **Secret file**, ID `pulsewatch-env`, upload your `.env`. The pipeline reads secrets from here because Jenkins builds in its own workspace, not in your clone.
-3. **New Item → Pipeline**. Under *Pipeline*, choose **Pipeline script from SCM**, SCM = **Git**, enter your repo URL (add credentials if private), branch `*/main`, Script Path `Jenkinsfile`.
-
-### 8. Deploy
-Click **Build Now**. When every stage is green, open `http://<EC2-PUBLIC-IP>` and the dashboard is live. Register an account, then log in.
-
-Useful commands on the server: `docker ps`, `docker compose logs -f backend`.
-
-## Jenkins Pipeline Stages
-
-| # | Stage | What it does |
-|---|---|---|
-| 1 | Checkout | `checkout scm` |
-| 2 | Lint & Test | Builds a test image, runs `flake8` and `pytest` inside it |
-| 3 | Build | `docker compose build` |
-| 4 | Deploy | `docker compose down || true`, then `docker compose up -d` (the database volume is kept) |
-| 5 | Health Check | Waits, then `curl -f http://localhost/api/health` with retries |
-
-## Project Structure
+## Repository layout
 
 ```
 pulsewatch/
-├── backend/
-│   ├── app.py                 # Flask factory, blueprint, error handlers, starts collector
-│   ├── config.py              # reads DATABASE_URL, JWT_SECRET
-│   ├── models.py              # User, Metric
-│   ├── collector.py           # psutil background sampler + 7-day cleanup
-│   ├── routes/
-│   │   ├── auth.py
-│   │   ├── metrics.py
-│   │   └── system.py          # system info + health
-│   ├── tests/test_health.py
-│   ├── requirements.txt
-│   └── Dockerfile
-├── frontend/
-│   ├── index.html             # login
-│   ├── register.html
-│   ├── dashboard.html
-│   ├── css/style.css
-│   ├── js/{api,auth,dashboard}.js
-│   └── Dockerfile
-├── nginx/nginx.conf
-├── screenshots/               # 01-login.png ... 06-ec2-console.png
-├── docker-compose.yml
-├── Jenkinsfile
-├── .env.example
-├── .gitignore
-├── .dockerignore
+├── backend/                    # Flask API + Dockerfile
+├── frontend/                   # static UI
+├── nginx/                      # nginx reverse‑proxy config
+├── screenshots/                # evidence images used in this README
+├── docker-compose.web.yml      # frontend (+ reverse proxy)  — runs on web
+├── docker-compose.app.yml      # backend API                 — runs on app
+├── docker-compose.db.yml       # PostgreSQL                  — runs on db
+├── Jenkinsfile                 # 5‑stage declarative pipeline
+├── .env.example                # template for .env (never commit .env)
 └── README.md
 ```
 
-## What I Learned
+---
 
-- Wiring a multi-container app together with Compose: health checks, `depends_on` conditions and named volumes
-- Why a background sampler must run in exactly one process (Gunicorn is set to one worker with threads)
-- Building a declarative Jenkins pipeline and keeping secrets out of Git with Secret file credentials
-- Reading host metrics from inside a container, and mounting `/etc/os-release` read-only to report the real host
-- Running Nginx as a non-root user and proxying an API behind a single port
+## AWS infrastructure
 
-## Limitations
+Three Ubuntu instances in the same VPC / subnet:
 
-- Single node: no high availability, no horizontal scaling
-- No HTTPS (plain HTTP on port 80); put it behind a load balancer or Let's Encrypt for real use
-- Monitors one host only and has no Prometheus or Grafana integration
-- JWT is kept in `localStorage`, which is simple but exposed to XSS
-- No password reset, roles or rate limiting
+| Instance | Role | Public IP | Notes |
+|----------|------|-----------|-------|
+| `pulsewatch-web` | Frontend + Jenkins | **yes** (Elastic IP recommended) | Jenkins on `:8080`, site on `:80` |
+| `pulsewatch-app` | Backend API | no | reachable only from `pulsewatch-web` |
+| `pulsewatch-db`  | PostgreSQL | no | reachable only from `pulsewatch-app` |
 
-## License
+**Instance sizing notes (learned the hard way):**
 
-MIT. See below.
+- A 1 GB `t3.micro` is **too small** for Jenkins + a Docker build. At minimum:
+  - **2 GB swap** on the web host, and
+  - Jenkins JVM heap capped: `JAVA_ARGS="-Djava.awt.headless=true -Xmx512m -Xms256m"` in `/etc/default/jenkins`.
+- Root EBS volumes should be **≥ 20 GiB** on the web host (Docker layers + build cache fill 8 GiB almost immediately).
+- `/tmp` is a RAM‑backed tmpfs sized at 50 % of RAM. Jenkins takes its node **offline** when free `/tmp` drops below **1 GiB**. On small instances either enlarge the tmpfs (`size=1G` in `/etc/fstab`) **or** lower the node's *Free Temp Space Threshold* in Jenkins (Manage Jenkins → Nodes → Built‑In Node → Configure → Disk Space Monitoring).
+
+---
+
+## Security groups
+
+All three groups allow **All traffic outbound to `0.0.0.0/0`** (needed to pull Docker
+images). Inbound rules:
+
+### `pulsewatch-web`
+
+| Type | Protocol | Port | Source |
+|------|----------|------|--------|
+| SSH | TCP | 22 | My IP |
+| HTTP | TCP | 80 | 0.0.0.0/0 |
+| Custom TCP | TCP | 8080 | My IP |
+
+### `pulsewatch-app`
+
+| Type | Protocol | Port | Source |
+|------|----------|------|--------|
+| SSH | TCP | 22 | My IP |
+| SSH | TCP | 22 | Custom → `pulsewatch-web` |
+| Custom TCP | TCP | 5000 | Custom → `pulsewatch-web` |
+
+### `pulsewatch-db`
+
+| Type | Protocol | Port | Source |
+|------|----------|------|--------|
+| SSH | TCP | 22 | My IP |
+| SSH | TCP | 22 | Custom → `pulsewatch-web` |
+| Custom TCP | TCP | 5432 | Custom → `pulsewatch-app` |
+
+> **Note:** if your IP changes, re‑select **My IP** on the SSH and 8080 rules —
+> a stale rule is the most common cause of "Jenkins was working yesterday".
+
+---
+
+## Environment file
+
+`~/pulsewatch/.env` on **pulsewatch-web** (template: `.env.example`). Never commit it.
+
+```dotenv
+# openssl rand -hex 16
+DB_PASSWORD=<32-hex-chars>
+# openssl rand -hex 32
+JWT_SECRET=<64-hex-chars>
+
+# private IPs of the other two instances
+APP_HOST=172.31.9.102
+DB_HOST=172.31.7.4
+```
+
+This file is uploaded to Jenkins as the **`pulsewatch-env`** credential of kind
+**Secret file** and bound into the pipeline via `withCredentials`. Re‑upload it
+every time the file changes — the credential is a snapshot.
+
+---
+
+## Jenkins setup
+
+1. Install Jenkins on `pulsewatch-web` (`:8080`).
+2. Let the `jenkins` user use Docker:
+   ```bash
+   sudo usermod -aG docker jenkins
+   sudo systemctl restart jenkins
+   ```
+3. Give the `jenkins` user SSH access to the app and db hosts:
+   ```bash
+   sudo -u jenkins ssh-keygen -t ed25519 -f /var/lib/jenkins/.ssh/id_ed25519 -N ""
+   sudo cat /var/lib/jenkins/.ssh/id_ed25519.pub   # append to ubuntu@APP/DB:~/.ssh/authorized_keys
+   sudo -u jenkins ssh-keyscan -H $APP_HOST $DB_HOST | sudo tee -a /var/lib/jenkins/.ssh/known_hosts
+   ```
+4. Create credential **Kind = Secret file**, **ID = `pulsewatch-env`**, file = `.env`.
+   > The ID field is hidden behind **Advanced…** — leaving it blank makes Jenkins
+   > default to the filename (`pulsewatch.env`), which will never match
+   > `credentials('pulsewatch-env')`.
+5. Pipeline job: **Pipeline script from SCM** → Git → repo URL → branch `main` → script path `Jenkinsfile`.
+
+---
+
+## CI/CD pipeline
+
+`Jenkinsfile` defines five stages (agent `any`, runs on the built‑in node):
+
+| Stage | What it does |
+|-------|--------------|
+| **Checkout** | `checkout scm` |
+| **Lint & Test** | builds `backend/Dockerfile` as `pulsewatch-test`, runs `flake8` + `pytest -q` inside |
+| **Build** | `docker compose build` for web locally and for app over `DOCKER_HOST=ssh://ubuntu@$APP_HOST` |
+| **Deploy** | brings up db on `$DB_HOST` (`--wait`), recreates app on `$APP_HOST` (`--wait`), recreates web locally |
+| **Health Check** | retries `curl http://$APP_HOST:5000/api/health` and `curl http://localhost/api/health` up to 6× |
+
+Post actions: success message, failure message, `docker image prune -f`.
+Build history capped at 10 (`buildDiscarder`), concurrent builds disabled.
+
+---
+
+## Deployment walkthrough
+
+```bash
+# 1. On the web server
+git clone https://github.com/Ashish7738/pulsewatch.git
+cd pulsewatch
+cp .env.example .env && nano .env        # fill DB_PASSWORD, JWT_SECRET, APP_HOST, DB_HOST
+
+# 2. Docker on all three hosts
+sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 git
+
+# 3. Jenkins credential + pipeline job (see above)
+
+# 4. Run
+#    Jenkins → pulsewatch job → Build Now
+```
+
+Expected console tail:
 
 ```
-MIT License
-
-Copyright (c) 2026 <your name>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Container pulsewatch-db-db-1 Healthy
+Container pulsewatch-app-backend-1 Healthy
+Container pulsewatch-web-frontend-1 Started
++ curl -f http://172.31.9.102:5000/api/health   → {"status": "ok"}
++ curl -f http://localhost/api/health            → {"status": "ok"}
+PulseWatch deployed on 3 servers
+Finished: SUCCESS
 ```
+
+---
+
+## Accessing the application
+
+| What | URL |
+|------|-----|
+| **PulseWatch UI** | `http://<WEB_PUBLIC_IP>/` |
+| **API docs (Swagger)** | `http://<WEB_PUBLIC_IP>/api/docs` |
+| **Jenkins** | `http://<WEB_PUBLIC_IP>:8080/` |
+| Health endpoints | `http://172.31.9.102:5000/api/health`, `http://localhost/api/health` |
+
+Register a user on the login page, then the dashboard streams live CPU / memory /
+disk gauges, a historical chart, a **System info** card (OS + EC2 hostname) and an
+alerts panel.
+
+---
+
+## Screenshots / evidence
+
+All images live in [`screenshots/`](screenshots). Sensitive values
+(public IPs, email, AWS account ID, key name, tokens) are blurred.
+
+| # | File | Captured | What it proves |
+|---|------|----------|----------------|
+| 1 | [`01-login.png`](screenshots/01-login.png) | After the first green Jenkins build, browser logged out | The PulseWatch login form is served from the EC2 web host |
+| 2 | [`02-dashboard.png`](screenshots/02-dashboard.png) | ~3 min after registering | Live data end‑to‑end: three gauges, line chart, System info card (Ubuntu + EC2 hostname), alerts panel |
+| 3 | [`03-swagger-api.png`](screenshots/03-swagger-api.png) | Same session | The backend API is reachable through the web tier at `/api/docs` |
+| 4 | [`04-jenkins-pipeline.png`](screenshots/04-jenkins-pipeline.png) | Immediately after a successful **Build Now** | Stage View: Checkout, Lint & Test, Build, Deploy, Health Check — all green |
+| 5 | [`05-docker-ps.png`](screenshots/05-docker-ps.png) | On the server (`docker ps`) | All three containers `Up`, with `db` and `backend` **healthy** |
+| 6 | [`06-ec2-console.png`](screenshots/06-ec2-console.png) | AWS Console → EC2 → Instances | The instances in state **Running** |
+
+### Screenshot 1 — Login
+![Login page](screenshots/01-login.png)
+
+### Screenshot 2 — Dashboard
+![Dashboard with live metrics](screenshots/02-dashboard.png)
+
+### Screenshot 3 — Swagger / API docs
+![Swagger endpoint list](screenshots/03-swagger-api.png)
+
+### Screenshot 4 — Jenkins Stage View
+![Jenkins pipeline all green](screenshots/04-jenkins-pipeline.png)
+
+### Screenshot 5 — `docker ps` on the server
+![docker ps output](screenshots/05-docker-ps.png)
+
+### Screenshot 6 — EC2 instances running
+![EC2 console](screenshots/06-ec2-console.png)
+
+---
+
+## Troubleshooting log
+
+Issues hit during this deployment and how they were resolved — kept here so the
+next person doesn't rediscover them.
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Jenkins node **offline**: "Disk space is below threshold of 1.00 GiB … /tmp" | `/tmp` is a tmpfs of ~455 MiB on a 1 GB instance — it can never reach 1 GiB | Either `mount -o remount,size=1G /tmp` **or** lower the node's Free Temp Space Threshold to `0.5` GiB (Manage Jenkins → Nodes → Built‑In Node → Configure) |
+| `mount: fstab has been modified, but systemd still uses the old version` | systemd caches mount units | `sudo systemctl daemon-reload && sudo mount -o remount /tmp` |
+| Build queued forever: "Waiting for next available executor" | Node offline (disk threshold) or quiet mode | Restore node Online, cancel quiet mode, abort stale builds |
+| `ERROR: pulsewatch-env` at end of build, plus `MissingContextVariableException: hudson.FilePath is missing` | Credential ID mismatch — the credential was created as `pulsewatch.env` (dot) instead of `pulsewatch-env` (hyphen). The `FilePath` error is only fallout because the pipeline aborts before allocating an agent | Delete and recreate the credential with **ID `pulsewatch-env`** typed manually under **Advanced…**; or bind it with `withCredentials([file(credentialsId: 'pulsewatch-env', variable: 'ENV_FILE')])` instead of the top‑level `environment` block |
+| `docker build` killed / instance unresponsive | 908 MiB RAM, 0 swap | Add 2 GiB swap (`fallocate` + `mkswap` + `swapon`, persist in `/etc/fstab`), cap Jenkins heap at `-Xmx512m`, resize instance to `t3.small`+ |
+| `no space left on device` during Build | 8 GiB root volume | Grow EBS to 20 GiB (`growpart` + `resize2fs`), prune with `docker system prune -af` |
+| `permission denied … /var/run/docker.sock` in pipeline | `jenkins` not in `docker` group | `sudo usermod -aG docker jenkins && sudo systemctl restart jenkins` |
+| Deploy stage hangs on `DOCKER_HOST=ssh://…` | `jenkins` has no key for app/db, or unknown host key | `sudo -u jenkins ssh-keygen …`, append pubkey to targets, `ssh-keyscan >> known_hosts` |
+| `ssh ubuntu@172.31.9.102 "docker ps"` → `Permission denied (publickey)` | The `ubuntu` user has no key on the app/db hosts — only the `jenkins` user does | Run `sudo -u jenkins ssh ubuntu@172.31.9.102 "docker ps"` (that's what the pipeline does) |
+| Health check 000/refused | web compose publishes `80:8080`; app publishes `5000:5000` — mismatch breaks the curl | Confirm `docker-compose.web.yml` maps `"80:8080"` and `docker-compose.app.yml` maps `"5000:5000"` |
+| Jenkins page unreachable from browser | SG rule for 8080 was scoped to "My IP" and the IP changed | Re‑apply **My IP** on the 8080 rule |
+| Screenshots render as broken images on GitHub | Files named `05-docker-ps.png.png` / `06-ec2-console.png.png` (double extension) or in the wrong folder | `Rename-Item screenshots\05-docker-ps.png.png screenshots\05-docker-ps.png` (same for 06) |
+
+---
+
+## Security notes
+
+- **`.env` is never committed.** Only `.env.example` is in the repo.
+- **Rotate secrets** if they ever appear in a build log, shell history or chat.
+  ```bash
+  sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=$(openssl rand -hex 16)/" .env
+  sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/" .env
+  ```
+  then re‑upload the credential. Changing `DB_PASSWORD` on an already‑initialised
+  Postgres volume requires `docker compose -f docker-compose.db.yml down -v` on the
+  db host so the cluster re‑initialises.
+- Jenkins `sh` steps echo commands; sourcing a file containing secrets prints them.
+  Start each secret‑touching `sh` block with `set +x`, or pass values via
+  `withCredentials` bindings rather than `set -a; . "$ENV_FILE"`.
+- Only port 80 is exposed to `0.0.0.0/0`. Jenkins `:8080` and SSH are restricted to
+  **My IP**. The app and db tiers have **no public IP** at all.
+- Prefer an Elastic IP for the web instance so the URL survives a stop/start.
+
+---
+
+## Teardown
+
+```bash
+# on each host
+docker compose -f docker-compose.<tier>.yml down            # keep volumes
+docker compose -f docker-compose.<tier>.yml down -v         # delete DB data
+
+# then in AWS
+# EC2 → Instances → terminate all three
+# EC2 → Volumes → delete orphaned volumes
+# EC2 → Security Groups → delete pulsewatch-*
+```
+
+---
+
+## Credits
+
+Upstream project: [Ashish7738/pulsewatch](https://github.com/Ashish7738/pulsewatch).
+This README documents a three‑server AWS deployment of that codebase with a
+Jenkins build/deploy pipeline.
