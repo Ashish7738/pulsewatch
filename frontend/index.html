@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in · PulseWatch</title>
+  <script>document.documentElement.dataset.theme = localStorage.getItem('pulsewatch_theme') || 'dark';</script>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="flex items-center justify-center p-4">
+  <main class="w-full max-w-sm">
+    <h1 class="text-3xl font-semibold mb-1">PulseWatch</h1>
+    <p class="muted mb-6">Log in to see how your server is doing right now.</p>
+
+    <form id="auth-form" data-mode="login" class="card space-y-4" novalidate>
+      <div id="form-error" class="form-error" role="alert" hidden></div>
+      <div>
+        <label for="email" class="block text-sm mb-1">Email</label>
+        <input id="email" name="email" type="email" class="input" autocomplete="email" required>
+      </div>
+      <div>
+        <label for="password" class="block text-sm mb-1">Password</label>
+        <input id="password" name="password" type="password" class="input" autocomplete="current-password" required>
+      </div>
+      <button id="submit-btn" type="submit" class="btn w-full">Log in</button>
+    </form>
+
+    <p class="muted text-sm mt-4 text-center">
+      New here? <a class="link" href="register.html">Create an account</a>
+    </p>
+  </main>
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+</body>
+</html>

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard · PulseWatch</title>
+  <script>document.documentElement.dataset.theme = localStorage.getItem('pulsewatch_theme') || 'dark';</script>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="max-w-6xl mx-auto px-4 pt-6 flex flex-wrap items-center justify-between gap-3">
+    <div>
+      <h1 class="text-2xl font-semibold">PulseWatch</h1>
+      <p class="muted text-sm flex items-center gap-2">
+        <span id="status-dot" class="status-dot" aria-hidden="true"></span>
+        <span id="status-text">Connecting…</span>
+      </p>
+    </div>
+    <div class="flex items-center gap-2">
+      <span id="user-email" class="muted text-sm hidden sm:inline"></span>
+      <button id="theme-btn" class="btn btn-ghost" type="button">Light mode</button>
+      <button id="logout-btn" class="btn btn-ghost" type="button">Log out</button>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-4 py-6 space-y-6">
+    <section aria-label="Alerts" id="alerts" class="space-y-2" aria-live="polite"></section>
+
+    <section aria-label="Current usage" class="grid grid-cols-1 sm:grid-cols-3 gap-6">
+      <article class="card text-center">
+        <h2 class="font-medium mb-3">CPU</h2>
+        <div class="gauge">
+          <svg viewBox="0 0 120 120" aria-hidden="true">
+            <circle class="gauge-track" cx="60" cy="60" r="52" fill="none" stroke-width="10"/>
+            <circle id="cpu-ring" class="gauge-ring" cx="60" cy="60" r="52" fill="none" stroke-width="10" stroke-linecap="round"/>
+          </svg>
+          <div class="gauge-value"><strong id="cpu-value">–</strong></div>
+        </div>
+      </article>
+      <article class="card text-center">
+        <h2 class="font-medium mb-3">Memory</h2>
+        <div class="gauge">
+          <svg viewBox="0 0 120 120" aria-hidden="true">
+            <circle class="gauge-track" cx="60" cy="60" r="52" fill="none" stroke-width="10"/>
+            <circle id="memory-ring" class="gauge-ring" cx="60" cy="60" r="52" fill="none" stroke-width="10" stroke-linecap="round"/>
+          </svg>
+          <div class="gauge-value"><strong id="memory-value">–</strong></div>
+        </div>
+      </article>
+      <article class="card text-center">
+        <h2 class="font-medium mb-3">Disk</h2>
+        <div class="gauge">
+          <svg viewBox="0 0 120 120" aria-hidden="true">
+            <circle class="gauge-track" cx="60" cy="60" r="52" fill="none" stroke-width="10"/>
+            <circle id="disk-ring" class="gauge-ring" cx="60" cy="60" r="52" fill="none" stroke-width="10" stroke-linecap="round"/>
+          </svg>
+          <div class="gauge-value"><strong id="disk-value">–</strong></div>
+        </div>
+      </article>
+    </section>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <section class="card lg:col-span-2" aria-label="History">
+        <h2 class="font-medium mb-3">CPU and memory, last 60 minutes</h2>
+        <div class="chart-box"><canvas id="history-chart" role="img" aria-label="Line chart of CPU and memory usage over the last 60 minutes"></canvas></div>
+        <p id="chart-empty" class="muted text-sm mt-2" hidden>No history yet. Samples are taken every 10 seconds.</p>
+      </section>
+
+      <section class="card" aria-label="System info">
+        <h2 class="font-medium mb-2">System info</h2>
+        <dl>
+          <div class="info-row"><dt class="muted">Hostname</dt><dd id="info-hostname">–</dd></div>
+          <div class="info-row"><dt class="muted">OS</dt><dd id="info-os">–</dd></div>
+          <div class="info-row"><dt class="muted">Kernel</dt><dd id="info-kernel">–</dd></div>
+          <div class="info-row"><dt class="muted">Uptime</dt><dd id="info-uptime">–</dd></div>
+        </dl>
+        <p class="muted text-xs mt-3">Last updated <span id="updated-at">–</span></p>
+      </section>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/dashboard.js"></script>
+</body>
+</html>
